@@ -80,9 +80,10 @@ class FormatBundle3DTrack(DefaultFormatBundle):
             instance_inds = [torch.tensor(_t) for _t in results['instance_inds']]
             results['instance_inds'] = DC(instance_inds)
         
-        keys = ['l2g_r_mat', 'l2g_t', 'radar']
+        keys = ['l2g_r_mat', 'l2g_t']
         for key in keys:
             if key in results:
+                # print(key, results[key])
                 results[key] = DC(torch.tensor(results[key], dtype=torch.float))
 
         return results

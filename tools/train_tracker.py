@@ -17,7 +17,7 @@ from mmdet3d.datasets import build_dataset
 from mmdet3d.models import build_detector
 from mmdet3d.utils import collect_env, get_root_logger
 from mmdet.apis import set_random_seed, train_detector
-from mmdet3d.apis import train_tracker
+from train_api import train_tracker
 
 
 def parse_args():
@@ -223,6 +223,12 @@ def main():
             CLASSES=datasets[0].CLASSES)
     # add an attribute for visualization convenience
     model.CLASSES = datasets[0].CLASSES
+
+    for i in range(10):
+        data = datasets[0][i]
+        import pdb
+        pdb.set_trace()
+
     train_tracker(
         model,
         datasets,

@@ -1,6 +1,7 @@
 from .assigner import HungarianAssigner3DTrack
 from .tracker import MUTRCamTracker
 from .head import DeformableMUTRTrackingHead
+from .mvx_two_stage_detector import MUTRMVXTwoStageDetector
 from .loss import ClipMatcher
 from .transformer import (Detr3DCamTransformerPlus,
                           Detr3DCamTrackPlusTransformerDecoder,

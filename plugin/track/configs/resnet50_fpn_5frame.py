@@ -4,7 +4,7 @@ _base_ = [
 ]
 workflow = [('train', 1)]
 plugin = True
-plugin_dir = 'plugin/track/'
+plugin_dir = 'plugin/'
 
 point_cloud_range = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
 voxel_size = [0.2, 0.2, 8]
@@ -88,8 +88,8 @@ model = dict(
         in_channels=[256, 512, 1024, 2048],
         out_channels=256,
         start_level=1,
-        add_extra_convs=True,
-        extra_convs_on_inputs=False,
+        add_extra_convs='on_output',
+        # extra_convs_on_inputs=False,
         num_outs=4,
         norm_cfg=dict(type='BN2d'),
         relu_before_extra_convs=True),
@@ -172,28 +172,30 @@ data_root = 'data/nuscenes/'
 file_client_args = dict(backend='disk')
 
 train_pipeline = [
-    dict(
-        type='LoadPointsFromFile',
-        coord_type='LIDAR',
-        load_dim=5,
-        use_dim=5,
-        file_client_args=file_client_args),
+    # dict(
+    #     type='LoadPointsFromFile',
+    #     coord_type='LIDAR',
+    #     load_dim=5,
+    #     use_dim=5,
+    #     file_client_args=file_client_args),
     dict(type='LoadMultiViewImageFromFiles'),
-    dict(
-        type='LoadRadarPointsMultiSweeps',
-        load_dim=18,
-        sweeps_num=1,
-        use_dim=radar_use_dims,
-        max_num=100, ),
+    # dict(
+    #     type='LoadRadarPointsMultiSweeps',
+    #     load_dim=18,
+    #     sweeps_num=1,
+    #     use_dim=radar_use_dims,
+    #     max_num=100, ),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
     dict(type='InstanceRangeFilter', point_cloud_range=point_cloud_range),
     #dict(type='ObjectNameFilter', classes=class_names),
-    dict(type='Normalize3D', **img_norm_cfg),
-    dict(type='Pad3D', size_divisor=32)]
+    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    dict(type='PadMultiViewImage', size_divisor=32),
+]
 
 train_pipeline_post = [
     dict(type='FormatBundle3DTrack'),
-    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d', 'instance_inds', 'img', 'timestamp', 'l2g_r_mat', 'l2g_t', 'radar'])
+    # dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d', 'instance_inds', 'img', 'timestamp', 'l2g_r_mat', 'l2g_t', 'radar'])
+    dict(type='Collect3D', keys=['gt_bboxes_3d', 'gt_labels_3d', 'instance_inds', 'img', 'timestamp', 'l2g_r_mat', 'l2g_t'])
 ]
 test_pipeline = [
     dict(
@@ -209,8 +211,8 @@ test_pipeline = [
         sweeps_num=1,
         use_dim=radar_use_dims,
         max_num=100, ),
-    dict(type='Normalize3D', **img_norm_cfg),
-    dict(type='Pad3D', size_divisor=32),
+    dict(type='NormalizeMultiviewImage', **img_norm_cfg),
+    dict(type='PadMultiViewImage', size_divisor=32),
 ]
 
 test_pipeline_post = [
@@ -226,7 +228,7 @@ data = dict(
             type=dataset_type,
             num_frames_per_sample=5,  # number of frames for each clip in training. If you have more memory, I suggested you to use more.
             data_root=data_root,
-            ann_file=data_root + 'track_radar_infos_train.pkl',
+            ann_file=data_root + 'track_mutr_infos_train.pkl',
             pipeline_single=train_pipeline,
             pipeline_post=train_pipeline_post,
             classes=class_names,
@@ -236,12 +238,12 @@ data = dict(
             box_type_3d='LiDAR'),
     # ),
     val=dict(type=dataset_type, pipeline_single=test_pipeline, pipeline_post=test_pipeline_post, classes=class_names, modality=input_modality,
-             ann_file=data_root + 'track_radar_infos_val.pkl',
+             ann_file=data_root + 'track_mutr_infos_val.pkl',
              num_frames_per_sample=1,), # when inference, set bs=1
     test=dict(type=dataset_type, pipeline_single=test_pipeline,
               pipeline_post=test_pipeline_post,
               classes=class_names, modality=input_modality,
-              ann_file=data_root + 'track_radar_infos_val.pkl',
+              ann_file=data_root + 'track_mutr_infos_val.pkl',
               num_frames_per_sample=1,)) # when inference, set bs=1
 
 optimizer = dict(
@@ -260,11 +262,11 @@ lr_config = dict(
     warmup='linear',
     warmup_iters=500,
     warmup_ratio=1.0 / 3,
-    step=[20, 23])
-total_epochs = 24 # I suggest you to train longer. Like 48, 72 epochs, and change lr_config accrodingly
+    step=[5, 7])
+total_epochs = 8 # I suggest you to train longer. Like 48, 72 epochs, and change lr_config accrodingly
 evaluation = dict(interval=4)
 
-runner = dict(type='EpochBasedRunner', max_epochs=24)
+runner = dict(type='EpochBasedRunner', max_epochs=8)
 
 find_unused_parameters = True
 load_from = None # path to pretrained model.

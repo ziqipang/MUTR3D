@@ -17,7 +17,7 @@ from .memory_bank import build_memory_bank
 from mmdet.models import build_loss
 from copy import deepcopy
 from mmcv.runner import force_fp32, auto_fp16
-from mmdet3d.core.bbox.util import normalize_bbox, denormalize_bbox
+from plugin.core.bbox.util import normalize_bbox, denormalize_bbox
 from .radar_encoder import build_radar_encoder
 from .kalman_filter import BBox as kalman_box
 from .kalman_filter import KalmanFilterMotionModel, detr3dbox_to_bbox, bbox_to_detr3dbox

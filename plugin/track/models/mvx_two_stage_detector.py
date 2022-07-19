@@ -11,12 +11,12 @@ from mmdet3d.core import (Box3DMode, Coord3DMode, bbox3d2result,
 from mmdet3d.ops import Voxelization
 from mmdet.core import multi_apply
 from mmdet.models import DETECTORS
-from .. import builder
-from .base import Base3DDetector
+from mmdet3d.models.detectors import Base3DDetector
+from mmdet3d.models import builder
 
 
 @DETECTORS.register_module()
-class MVXTwoStageDetector(Base3DDetector):
+class MUTRMVXTwoStageDetector(Base3DDetector):
     """Base class of Multi-modality VoxelNet."""
 
     def __init__(self,
@@ -34,7 +34,7 @@ class MVXTwoStageDetector(Base3DDetector):
                  train_cfg=None,
                  test_cfg=None,
                  pretrained=None):
-        super(MVXTwoStageDetector, self).__init__()
+        super(MUTRMVXTwoStageDetector, self).__init__()
 
         if pts_voxel_layer:
             self.pts_voxel_layer = Voxelization(**pts_voxel_layer)
@@ -73,7 +73,7 @@ class MVXTwoStageDetector(Base3DDetector):
 
     def init_weights(self, pretrained=None):
         """Initialize model weights."""
-        super(MVXTwoStageDetector, self).init_weights()
+        super(MUTRMVXTwoStageDetector, self).init_weights()
         if pretrained is None:
             img_pretrained = None
             pts_pretrained = None

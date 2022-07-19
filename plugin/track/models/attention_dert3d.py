@@ -1,6 +1,6 @@
 
 import math
-
+import warnings
 import numpy as np
 import torch
 import torch.nn as nn
@@ -180,8 +180,8 @@ class Detr3DCrossAtten(BaseModule):
         
         reference_points_3d, output, mask = feature_sampling(
             value, reference_points, self.pc_range, kwargs['img_metas'])
-        output = torch.nan_to_num(output)
-        mask = torch.nan_to_num(mask)
+        output = nan_to_num(output)
+        mask = nan_to_num(mask)
 
         attention_weights = attention_weights.sigmoid() * mask
         output = output * attention_weights
@@ -364,8 +364,8 @@ class Detr3DCamRadarCrossAtten(BaseModule):
         
         reference_points_3d, output, mask = feature_sampling(
             value, reference_points, self.pc_range, kwargs['img_metas'])
-        output = torch.nan_to_num(output)
-        mask = torch.nan_to_num(mask)
+        output = nan_to_num(output)
+        mask = nan_to_num(mask)
 
         attention_weights = attention_weights.sigmoid() * mask
         output = output * attention_weights
@@ -463,7 +463,7 @@ def feature_sampling(mlvl_feats, reference_points, pc_range, img_metas):
                  & (reference_points_cam[..., 1:2] > -1.0) 
                  & (reference_points_cam[..., 1:2] < 1.0))
     mask = mask.view(B, num_cam, 1, num_query, 1, 1).permute(0, 2, 3, 1, 4, 5)
-    mask = torch.nan_to_num(mask)
+    mask = nan_to_num(mask)
     sampled_feats = []
     for lvl, feat in enumerate(mlvl_feats):
         B, N, C, H, W = feat.size()
@@ -475,3 +475,12 @@ def feature_sampling(mlvl_feats, reference_points, pc_range, img_metas):
     sampled_feats = torch.stack(sampled_feats, -1)
     sampled_feats = sampled_feats.view(B, C, num_query, num_cam,  1, len(mlvl_feats))
     return reference_points_3d, sampled_feats, mask
+
+
+def nan_to_num(x, nan=0.0, posinf=None, neginf=None):
+    x[torch.isnan(x)]= nan
+    if posinf is not None:
+        x[torch.isposinf(x)] = posinf
+    if neginf is not None:
+        x[torch.isneginf(x)] = posinf
+    return x

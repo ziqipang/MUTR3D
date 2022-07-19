@@ -1,10 +1,11 @@
 from os import times
 import torch
 import torch.nn as nn
-
+import numpy as np
 from mmdet3d.core import bbox3d2result, merge_aug_bboxes_3d
 from mmdet.models import DETECTORS
 from mmdet3d.models.detectors.mvx_two_stage import MVXTwoStageDetector
+from .mvx_two_stage_detector import MUTRMVXTwoStageDetector
 from .grid_mask import GridMask
 from mmdet3d.core.bbox.coders import build_bbox_coder
 from ..structures import Instances
@@ -13,7 +14,7 @@ from .memory_bank import build_memory_bank
 from mmdet.models import build_loss
 from copy import deepcopy
 from mmcv.runner import force_fp32, auto_fp16
-from mmdet3d.core.bbox.util import normalize_bbox, denormalize_bbox
+from plugin.core.bbox.util import normalize_bbox, denormalize_bbox
 from .radar_encoder import build_radar_encoder
 
 
@@ -88,7 +89,7 @@ class RuntimeTrackerBase(object):
 
 
 @DETECTORS.register_module()
-class MUTRCamTracker(MVXTwoStageDetector):
+class MUTRCamTracker(MUTRMVXTwoStageDetector):
     """Tracker which support image w, w/o radar."""
 
     def __init__(self,
@@ -208,7 +209,8 @@ class MUTRCamTracker(MVXTwoStageDetector):
 
         ref_pts = reference_points @ l2g_r1 + l2g_t1 - l2g_t2
 
-        g2l_r = torch.linalg.inv(l2g_r2).type(torch.float)
+        g2l_r = torch.tensor(np.linalg.inv(l2g_r1.cpu().numpy())).type(torch.float).to(l2g_r2.device)
+        # g2l_r = torch.linalg.inv(l2g_r2).type(torch.float)
 
         ref_pts = ref_pts @ g2l_r
 
@@ -529,9 +531,15 @@ class MUTRCamTracker(MVXTwoStageDetector):
         # for bs 1
         lidar2img = img_metas[0]['lidar2img']  # [T, num_cam]
         for i in range(num_frame):
-            points_single = [p_[i] for p_ in points]
+            if points is None:
+                points_single = None
+            else:
+                points_single = [p_[i] for p_ in points]
             img_single = torch.stack([img_[i] for img_ in img], dim=0)
-            radar_single = torch.stack([radar_[i] for radar_ in radar], dim=0)
+            if radar is None:
+                radar_single = None
+            else:
+                radar_single = torch.stack([radar_[i] for radar_ in radar], dim=0)
 
             img_metas_single = deepcopy(img_metas)
             img_metas_single[0]['lidar2img'] = lidar2img[i]
