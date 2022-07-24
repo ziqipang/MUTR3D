@@ -21,8 +21,8 @@ class QueryInteractionBase(nn.Module):
     def __init__(self, args, dim_in, hidden_dim, dim_out):
         super().__init__()
         self.args = args
-        self._build_layers(args, dim_in, hidden_dim, dim_out)
-        self._reset_parameters()
+        # self._build_layers(args, dim_in, hidden_dim, dim_out)
+        # self._reset_parameters()
 
     def _build_layers(self, args, dim_in, hidden_dim, dim_out):
         raise NotImplementedError()
@@ -66,62 +66,37 @@ class QueryInteractionModule(QueryInteractionBase):
     def _build_layers(self, args, dim_in, hidden_dim, dim_out):
         dropout = args['merger_dropout']
 
-        # self.self_attn = nn.MultiheadAttention(dim_in, 8, dropout)
-        # self.linear1 = nn.Linear(dim_in, hidden_dim)
-        # self.dropout = nn.Dropout(dropout)
-        # self.linear2 = nn.Linear(hidden_dim, dim_in)
-
-        # if args['update_query_pos']:
-        #     self.linear_pos1 = nn.Linear(dim_in, hidden_dim)
-        #     self.linear_pos2 = nn.Linear(hidden_dim, dim_in)
-        #     self.dropout_pos1 = nn.Dropout(dropout)
-        #     self.dropout_pos2 = nn.Dropout(dropout)
-        #     self.norm_pos = nn.LayerNorm(dim_in)
-
-        # self.linear_feat1 = nn.Linear(dim_in, hidden_dim)
-        # self.linear_feat2 = nn.Linear(hidden_dim, dim_in)
-        # self.dropout_feat1 = nn.Dropout(dropout)
-        # self.dropout_feat2 = nn.Dropout(dropout)
-        # self.norm_feat = nn.LayerNorm(dim_in)
-
-        # self.norm1 = nn.LayerNorm(dim_in)
-        # self.norm2 = nn.LayerNorm(dim_in)
-
-        # self.dropout1 = nn.Dropout(dropout)
-        # self.dropout2 = nn.Dropout(dropout)
+        self.self_attn = nn.MultiheadAttention(dim_in, 8, dropout)
         self.linear1 = nn.Linear(dim_in, hidden_dim)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(hidden_dim, dim_in)
 
-        self.linear_pos1 = nn.Linear(dim_in, hidden_dim)
-        self.linear_pos2 = nn.Linear(hidden_dim, dim_in)
-        self.dropout_pos1 = nn.Dropout(dropout)
-        self.dropout_pos2 = nn.Dropout(dropout)
-        self.norm_pos = nn.LayerNorm(dim_in)
+        if args['update_query_pos']:
+            self.linear_pos1 = nn.Linear(dim_in, hidden_dim)
+            self.linear_pos2 = nn.Linear(hidden_dim, dim_in)
+            self.dropout_pos1 = nn.Dropout(dropout)
+            self.dropout_pos2 = nn.Dropout(dropout)
+            self.norm_pos = nn.LayerNorm(dim_in)
+
+        self.linear_feat1 = nn.Linear(dim_in, hidden_dim)
+        self.linear_feat2 = nn.Linear(hidden_dim, dim_in)
+        self.dropout_feat1 = nn.Dropout(dropout)
+        self.dropout_feat2 = nn.Dropout(dropout)
+        self.norm_feat = nn.LayerNorm(dim_in)
+
+        self.norm1 = nn.LayerNorm(dim_in)
+        self.norm2 = nn.LayerNorm(dim_in)
+
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
         self.activation = F.relu
-    
-    def _update_track_embedding(self, track_instances: Instances):
-        if len(track_instances) == 0:
-            return track_instances
-        
-        dim = track_instances.query.shape[1]
-        out_embed = track_instances.output_embedding
-        query_pos = track_instances.query[:, :dim // 2]
-        query_feat = track_instances.query[:, dim//2:]
 
-        new_query_feat = self.linear2(self.activation(self.linear1(query_feat)))
-        new_query_pos = self.linear_pos2(self.activation(self.linear_pos1(query_pos)))
-        track_instances.query[:, :dim // 2] = query_pos
-        track_instances.query[:, dim // 2:] = query_feat
-        
-        return track_instances
-
-    def _update_track_embedding_orig(self, track_instances: Instances) -> Instances:
+    def _update_track_embedding(self, track_instances: Instances) -> Instances:
         if len(track_instances) == 0:
             return track_instances
         dim = track_instances.query.shape[1]
         out_embed = track_instances.output_embedding
-        query_pos = track_instances.query[:, :dim // 2]
+        query_pos = track_instances.query[:, :]
         query_feat = track_instances.query[:, dim//2:]
         q = k = query_pos + out_embed
 
@@ -194,9 +169,9 @@ class QueryInteractionModule(QueryInteractionBase):
             active_idxes = (track_instances.obj_idxes >= 0)
             active_track_instances = track_instances[active_idxes]
             # set -2 instead of -1 to ensure that these tracks will not be selected in matching.
-            # active_track_instances = self._random_drop_tracks(active_track_instances)
-            # if self.fp_ratio > 0:
-            #     active_track_instances = self._add_fp_tracks(track_instances, active_track_instances)
+            active_track_instances = self._random_drop_tracks(active_track_instances)
+            if self.fp_ratio > 0:
+                active_track_instances = self._add_fp_tracks(track_instances, active_track_instances)
         else:
             active_track_instances = track_instances[track_instances.obj_idxes >= 0]
 
@@ -204,13 +179,14 @@ class QueryInteractionModule(QueryInteractionBase):
 
     def forward(self, data) -> Instances:
         active_track_instances = self._select_active_tracks(data)
-        active_track_instances = self._update_track_embedding(active_track_instances)
+        active_track_instances.query = active_track_instances.output_embedding
+        # active_track_instances = self._update_track_embedding(active_track_instances)
         init_track_instances: Instances = data['init_track_instances']
         merged_track_instances = Instances.cat([init_track_instances, active_track_instances])
         return merged_track_instances
 
 
-def build_qim(args, dim_in, hidden_dim, dim_out):
+def build_petr_qim(args, dim_in, hidden_dim, dim_out):
     qim_type = args['qim_type']
     interaction_layers = {
         'QIMBase': QueryInteractionModule,

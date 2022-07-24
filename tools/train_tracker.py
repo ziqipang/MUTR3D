@@ -224,10 +224,10 @@ def main():
     # add an attribute for visualization convenience
     model.CLASSES = datasets[0].CLASSES
 
-    for i in range(10):
-        data = datasets[0][i]
-        import pdb
-        pdb.set_trace()
+    # for i in range(10):
+    #     data = datasets[0][i]
+    #     import pdb
+    #     pdb.set_trace()
 
     train_tracker(
         model,

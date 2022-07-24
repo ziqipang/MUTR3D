@@ -8,4 +8,5 @@ from .transform3d import (
     PadMultiViewImage, NormalizeMultiviewImage, 
     PhotoMetricDistortionMultiViewImage, CropMultiViewImage,
     RandomScaleImageMultiViewImage,
-    HorizontalRandomFlipMultiViewImage)
+    HorizontalRandomFlipMultiViewImage,
+    ResizeCropFlipImage)

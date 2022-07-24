@@ -1,5 +1,5 @@
-from os import times
 import torch
+import math
 import torch.nn as nn
 import numpy as np
 from mmdet3d.core import bbox3d2result, merge_aug_bboxes_3d
@@ -9,87 +9,33 @@ from .mvx_two_stage_detector import MUTRMVXTwoStageDetector
 from .grid_mask import GridMask
 from mmdet3d.core.bbox.coders import build_bbox_coder
 from ..structures import Instances
-from .qim import build_qim
+from .petr_qim import build_petr_qim
 from .memory_bank import build_memory_bank
 from mmdet.models import build_loss
 from copy import deepcopy
 from mmcv.runner import force_fp32, auto_fp16
 from plugin.core.bbox.util import normalize_bbox, denormalize_bbox
 from .radar_encoder import build_radar_encoder
+from .tracker import inverse_sigmoid, RuntimeTrackerBase
 
 
-def inverse_sigmoid(x, eps=1e-5):
-    """Inverse function of sigmoid.
-
-    Args:
-        x (Tensor): The tensor to do the
-            inverse.
-        eps (float): EPS avoid numerical
-            overflow. Defaults 1e-5.
-    Returns:
-        Tensor: The x has passed the inverse
-            function of sigmoid, has same
-            shape with input.
-    """
-    x = x.clamp(min=0, max=1)
-    x1 = x.clamp(min=eps)
-    x2 = (1 - x).clamp(min=eps)
-    return torch.log(x1 / x2)
-
-# this class is from MOTR
-class RuntimeTrackerBase(object):
-    # code from https://github.com/megvii-model/MOTR/blob/main/models/motr.py#L303
-    def __init__(self, score_thresh=0.7, filter_score_thresh=0.6, miss_tolerance=5):
-        self.score_thresh = score_thresh
-        self.filter_score_thresh = filter_score_thresh
-        self.miss_tolerance = miss_tolerance
-        self.max_obj_id = 0
-
-    def clear(self):
-        self.max_obj_id = 0
-
-    def update(self, track_instances: Instances):
-        track_instances.disappear_time[track_instances.scores >= self.score_thresh] = 0
-        for i in range(len(track_instances)):
-            if track_instances.obj_idxes[i] == -1 and track_instances.scores[i] >= self.score_thresh:
-                # new track
-                # print("track {} has score {}, assign obj_id {}".format(i, track_instances.scores[i], self.max_obj_id))
-                track_instances.obj_idxes[i] = self.max_obj_id
-                self.max_obj_id += 1
-            elif track_instances.obj_idxes[i] >= 0 and track_instances.scores[i] < self.filter_score_thresh:
-                # sleep time ++
-                track_instances.disappear_time[i] += 1
-                if track_instances.disappear_time[i] >= self.miss_tolerance:
-                    # mark deaded tracklets: Set the obj_id to -1.
-                    # TODO: remove it by following functions
-                    # Then this track will be removed by TrackEmbeddingLayer.
-                    track_instances.obj_idxes[i] = -1
-
-    def update_fix_label(self, track_instances: Instances, old_class_scores):
-        track_instances.disappear_time[track_instances.scores >= self.score_thresh] = 0
-        for i in range(len(track_instances)):
-            if track_instances.obj_idxes[i] == -1 and track_instances.scores[i] >= self.score_thresh:
-                # new track
-                # print("track {} has score {}, assign obj_id {}".format(i, track_instances.scores[i], self.max_obj_id))
-                track_instances.obj_idxes[i] = self.max_obj_id
-                self.max_obj_id += 1
-            elif track_instances.obj_idxes[i] >= 0 and track_instances.scores[i] < self.filter_score_thresh:
-                # sleep time ++
-                track_instances.disappear_time[i] += 1
-                # keep class unchanged!
-                track_instances.pred_logits[i] = old_class_scores[i]
-                if track_instances.disappear_time[i] >= self.miss_tolerance:
-                    # mark deaded tracklets: Set the obj_id to -1.
-                    # TODO: remove it by following functions
-                    # Then this track will be removed by TrackEmbeddingLayer.
-                    track_instances.obj_idxes[i] = -1
-            elif track_instances.obj_idxes[i] >= 0 and track_instances.scores[i] >= self.filter_score_thresh:
-                # keep class unchanged!
-                track_instances.pred_logits[i] = old_class_scores[i]
+def pos2posemb3d(pos, num_pos_feats=128, temperature=10000):
+    scale = 2 * math.pi
+    pos = pos * scale
+    dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=pos.device)
+    dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
+    pos_x = pos[..., 0, None] / dim_t
+    pos_y = pos[..., 1, None] / dim_t
+    pos_z = pos[..., 2, None] / dim_t
+    pos_x = torch.stack((pos_x[..., 0::2].sin(), pos_x[..., 1::2].cos()), dim=-1).flatten(-2)
+    pos_y = torch.stack((pos_y[..., 0::2].sin(), pos_y[..., 1::2].cos()), dim=-1).flatten(-2)
+    pos_z = torch.stack((pos_z[..., 0::2].sin(), pos_z[..., 1::2].cos()), dim=-1).flatten(-2)
+    posemb = torch.cat((pos_y, pos_x, pos_z), dim=-1)
+    return posemb
 
 
 @DETECTORS.register_module()
-class MUTRCamTracker(MUTRMVXTwoStageDetector):
+class MUTRPETRCamTracker(MUTRMVXTwoStageDetector):
     """Tracker which support image w, w/o radar."""
 
     def __init__(self,
@@ -132,7 +78,7 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
                  test_cfg=None,
                  pretrained=None,
                  ):
-        super(MUTRCamTracker,
+        super(MUTRPETRCamTracker,
               self).__init__(pts_voxel_layer, pts_voxel_encoder,
                              pts_middle_encoder, pts_fusion_layer,
                              img_backbone, pts_backbone, img_neck, pts_neck,
@@ -150,10 +96,14 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
         if self.fix_feats:
             self.img_backbone.eval()
             self.img_neck.eval()
-        self.reference_points = nn.Linear(self.embed_dims, 3)
+        self.reference_points = nn.Embedding(self.num_query, 3)
+        self.query_embedding = nn.Sequential(
+            nn.Linear(self.embed_dims*3//2, self.embed_dims),
+            nn.ReLU(),
+            nn.Linear(self.embed_dims, self.embed_dims * 2),
+        )
+        nn.init.uniform_(self.reference_points.weight.data, 0, 1)
         self.bbox_size_fc = nn.Linear(self.embed_dims, 3)
-        self.query_embedding = nn.Embedding(self.num_query,
-                                            self.embed_dims * 2)
         self.mem_bank_len = mem_cfg['memory_bank_len']
         self.memory_bank = None
         self.track_base = RuntimeTrackerBase(
@@ -161,7 +111,7 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
             filter_score_thresh=filter_score_thresh,
             miss_tolerance=5) # hyper-param for removing inactive queries
 
-        self.query_interact = build_qim(
+        self.query_interact = build_petr_qim(
             qim_args,
             dim_in=embed_dims,
             hidden_dim=embed_dims,
@@ -205,14 +155,14 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
         reference_points[..., 1:2] = reference_points[..., 1:2]*(pc_range[4] - pc_range[1]) + pc_range[1]
         reference_points[..., 2:3] = reference_points[..., 2:3]*(pc_range[5] - pc_range[2]) + pc_range[2]
 
-        # reference_points = reference_points + velo_pad * time_delta
+        reference_points = reference_points + velo_pad * time_delta
 
-        ref_pts = reference_points @ l2g_r1.T + l2g_t1 - l2g_t2
+        ref_pts = reference_points @ l2g_r1 + l2g_t1 - l2g_t2
 
         g2l_r = torch.tensor(np.linalg.inv(l2g_r1.cpu().numpy())).type(torch.float).to(l2g_r2.device)
         # g2l_r = torch.linalg.inv(l2g_r2).type(torch.float)
 
-        ref_pts = ref_pts @ g2l_r.T
+        ref_pts = ref_pts @ g2l_r
 
         ref_pts[..., 0:1] = (ref_pts[..., 0:1] - pc_range[0]) / (pc_range[3] - pc_range[0])
         ref_pts[..., 1:2] = (ref_pts[..., 1:2] - pc_range[1]) / (pc_range[4] - pc_range[1])
@@ -221,7 +171,6 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
         ref_pts = inverse_sigmoid(ref_pts)
 
         return ref_pts
-
 
     def extract_pts_feat(self, pts, img_feats, img_metas):
         """Extract features of points."""
@@ -255,6 +204,8 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
                 img = self.grid_mask(img)
 
             img_feats = self.img_backbone(img)
+            if isinstance(img_feats, dict):
+                img_feats = list(img_feats.values())
         else:
             return None
         if self.with_img_neck:
@@ -294,11 +245,10 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
 
     def _generate_empty_tracks(self):
         track_instances = Instances((1, 1))
-        num_queries, dim = self.query_embedding.weight.shape  # (300, 256 * 2)
-        device = self.query_embedding.weight.device
-        query = self.query_embedding.weight
-        track_instances.ref_pts = self.reference_points(
-                            query[..., :dim // 2])
+        num_queries, dim = self.reference_points.weight.shape[0], self.embed_dims * 2  # (300, 256 * 2)
+        device = self.reference_points.weight.device
+        track_instances.ref_pts = self.reference_points.weight
+        query = self.query_embedding(pos2posemb3d(track_instances.ref_pts))
 
         # init boxes: xy, wl, z, h, sin, cos, vx, vy, vz
         box_sizes = self.bbox_size_fc(query[..., :dim // 2])
@@ -308,7 +258,7 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
         pred_boxes_init[..., 2:4] = box_sizes[..., 0:2]
         pred_boxes_init[..., 5:6] = box_sizes[..., 2:3]
 
-        track_instances.query = query
+        track_instances.query = query[..., dim // 2:]
 
         track_instances.output_embedding = torch.zeros(
             (num_queries, dim >> 1), device=device)
@@ -341,11 +291,11 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
         track_instances.save_period = torch.zeros(
             (len(track_instances), ), dtype=torch.float32, device=device)
 
-        return track_instances.to(self.query_embedding.weight.device)
+        return track_instances.to(self.reference_points.weight.device)
 
     def _copy_tracks_for_loss(self, tgt_instances):
 
-        device = self.query_embedding.weight.device
+        device = self.reference_points.weight.device
         track_instances = Instances((1, 1))
 
         track_instances.obj_idxes = deepcopy(tgt_instances.obj_idxes)
@@ -363,7 +313,7 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
             dtype=torch.float, device=device)
 
         track_instances.save_period = deepcopy(tgt_instances.save_period)
-        return track_instances.to(self.query_embedding.weight.device)
+        return track_instances.to(self.reference_points.weight.device)
 
     @force_fp32(apply_to=('img', 'points'))
     def forward(self, return_loss=True, **kwargs):
@@ -409,8 +359,8 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
 
         output_classes, output_coords, \
             query_feats, last_ref_pts = self.pts_bbox_head(
-                img_feats, radar_feats, track_instances.query,
-                track_instances.ref_pts, ref_box_sizes, img_metas,)
+                img_feats, img_metas, track_instances.query,
+                track_instances.ref_pts)
 
         out = {'pred_logits': output_classes[-1],
                'pred_boxes': output_coords[-1],
@@ -450,7 +400,6 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
             track_instances = self.criterion.match_for_single_frame(
                 out, i, if_step=(i == (nb_dec - 1)))
 
-        # NOTE: remove memory bank
         # if self.memory_bank is not None:
         #     track_instances = self.memory_bank(track_instances)
 
@@ -460,7 +409,9 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
         tmp['init_track_instances'] = self._generate_empty_tracks()
         tmp['track_instances'] = track_instances
         out_track_instances = self.query_interact(tmp)
+        # track_instances.query = track_instances.output_embedding
         out['track_instances'] = out_track_instances
+        out['track_instances'] = track_instances
         return out
 
     def forward_train(self,
@@ -530,6 +481,7 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
 
         # for bs 1
         lidar2img = img_metas[0]['lidar2img']  # [T, num_cam]
+        img_metas_keys = img_metas[0].keys()
         for i in range(num_frame):
             if points is None:
                 points_single = None
@@ -540,9 +492,14 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
                 radar_single = None
             else:
                 radar_single = torch.stack([radar_[i] for radar_ in radar], dim=0)
+            
+            img_metas_single_frame = list()
+            for batch_idx in range(1):
+                img_metas_single_sample = {key: img_metas[batch_idx][key][i] for key in img_metas_keys}
+                img_metas_single_frame.append(img_metas_single_sample)
 
-            img_metas_single = deepcopy(img_metas)
-            img_metas_single[0]['lidar2img'] = lidar2img[i]
+            # img_metas_single = deepcopy(img_metas)
+            # img_metas_single[0]['lidar2img'] = lidar2img[i]
 
             if i == num_frame - 1:
                 l2g_r2 = None
@@ -553,7 +510,7 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
                 l2g_t2 = l2g_t[i+1]
                 time_delta = timestamp[i+1] - timestamp[i]
             frame_res = self._forward_single(points_single, img_single,
-                                             radar_single, img_metas_single,
+                                             radar_single, img_metas_single_frame,
                                              track_instances,
                                              l2g_r_mat[i], l2g_t[i],
                                              l2g_r2, l2g_t2, time_delta)
@@ -598,8 +555,8 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
 
         output_classes, output_coords, \
             query_feats, last_ref_pts = self.pts_bbox_head(
-                img_feats, radar_feats, track_instances.query,
-                track_instances.ref_pts, ref_box_sizes, img_metas,)
+                img_feats, img_metas, track_instances.query,
+                track_instances.ref_pts)
 
         out = {'pred_logits': output_classes[-1],
                'pred_boxes': output_coords[-1],
@@ -622,7 +579,6 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
 
         self.track_base.update(track_instances)
 
-        # NOTE: remove memory bank
         # if self.memory_bank is not None:
         #     track_instances = self.memory_bank(track_instances)
 
@@ -631,8 +587,9 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
         tmp = {}
         tmp['init_track_instances'] = self._generate_empty_tracks()
         tmp['track_instances'] = track_instances
-        out_track_instances = self.query_interact(tmp)
-        out['track_instances'] = out_track_instances
+        # out_track_instances = self.query_interact(tmp)
+        out['track_instances'] = track_instances
+        # out['track_instances'] = out_track_instances
         return out
 
     def forward_test(self,
@@ -700,17 +657,23 @@ class MUTRCamTracker(MUTRMVXTwoStageDetector):
 
         # for bs 1;
         lidar2img = img_metas[0]['lidar2img']  # [T, num_cam]
+        img_metas_keys = img_metas[0].keys()
         for i in range(num_frame):
             points_single = [p_[i] for p_ in points]
             img_single = torch.stack([img_[i] for img_ in img], dim=0)
             radar_single = torch.stack([radar_[i] for radar_ in radar], dim=0)
 
-            img_metas_single = deepcopy(img_metas)
-            img_metas_single[0]['lidar2img'] = lidar2img[i]
+            img_metas_single_frame = list()
+            for batch_idx in range(1):
+                img_metas_single_sample = {key: img_metas[batch_idx][key][i] for key in img_metas_keys}
+                img_metas_single_frame.append(img_metas_single_sample)
+
+            # img_metas_single = deepcopy(img_metas)
+            # img_metas_single[0]['lidar2img'] = lidar2img[i]
 
             frame_res = self._inference_single(points_single, img_single,
                                                radar_single,
-                                               img_metas_single,
+                                               img_metas_single_frame,
                                                track_instances,
                                                l2g_r1, l2g_t1, l2g_r2, l2g_t2,
                                                time_delta)

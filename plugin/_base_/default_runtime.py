@@ -7,7 +7,11 @@ log_config = dict(
     interval=10,
     hooks=[
         dict(type='TextLoggerHook'),
-        dict(type='TensorboardLoggerHook')
+        dict(type='TensorboardLoggerHook'),
+        dict(type='WandbLoggerHook',
+             init_kwargs={'project': 'mutr3d'},
+             interval=10,
+            )
     ])
 # yapf:enable
 dist_params = dict(backend='nccl')
